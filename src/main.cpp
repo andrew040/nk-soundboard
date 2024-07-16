@@ -2,11 +2,13 @@
 #include "Audio.h"
 #include "SPIFFS.h"
 #include "FS.h"
+#include "driver/rtc_io.h"
+#include "esp_sleep.h"
  
 #define I2S_DOUT           21  //MAX98357 pin DIN
 #define I2S_BCLK           22  //MAX98357 pin BLCK
 #define I2S_LRC            23  //MAX98357 pin LRCLK
-#define I2S_SD             19  //MAX98357 pin ~SD
+#define I2S_SD             4   //MAX98357 pin ~SD
 
 #define BUTTON             0
 #define NUMBER_OF_FILES    16  //16 goeie stukskes
@@ -14,7 +16,10 @@
 Audio audio;
 
 volatile bool buttonPressed = false;
-int number = 0;
+RTC_DATA_ATTR int number = 0;
+int lastPress;
+esp_sleep_wakeup_cause_t wakeup_reason;
+
 
 void IRAM_ATTR handleButtonPress() {
   buttonPressed = true;
@@ -46,7 +51,7 @@ void onButtonPress() {
   } else{
     number=0;
   }
-
+  lastPress=millis();
 }
 
 void setup() {
@@ -54,15 +59,28 @@ void setup() {
     delay(10);
 
     pinMode(BUTTON, INPUT_PULLUP);
+    pinMode(GPIO_NUM_4, OUTPUT);
     attachInterrupt(digitalPinToInterrupt(BUTTON), handleButtonPress, FALLING);
+
+    
+    rtc_gpio_hold_dis(GPIO_NUM_4);                //release deep-sleep hold of I2S_SD
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_0,0);   //enable wakeup from pin 0
+    digitalWrite(GPIO_NUM_4, HIGH);               //drive shutdown pin high to enable amplifier
+
     
     if(!SPIFFS.begin(true)){
      Serial.println("SPIFFS not available");
      while(1);
     }
-
+    
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(5);
+
+    wakeup_reason = esp_sleep_get_wakeup_cause();
+    if(wakeup_reason == ESP_SLEEP_WAKEUP_EXT0){
+        onButtonPress();
+    }
+
 }
  
 void loop()
@@ -71,7 +89,12 @@ void loop()
     if (buttonPressed) {
         buttonPressed = false;
         onButtonPress();
-        Serial.print("Playing file ");
-        Serial.println((String)number);
+        Serial.println("Playing file "+(String)(number-1));
+    }
+    if(millis()-lastPress>30000){
+        Serial.println("Going to deepsleep");
+        digitalWrite(GPIO_NUM_4, LOW);     //drive shutdown pin low
+        rtc_gpio_hold_en(GPIO_NUM_4);      //hold IO during deep sleep to keep the amplifier off - shutdown current is 2uA max
+        esp_deep_sleep_start();
     }
 }
